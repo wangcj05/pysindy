@@ -873,3 +873,92 @@ def _comprehend_and_validate_inputs(x, t, x_dot, u, feature_library):
             )
         u = [comprehend_and_validate(ui, ti) for ui, ti in _zip_like_sequence(u, t)]
     return x, x_dot, u
+
+
+
+def fit_regression(
+    self,
+    x,
+    y,
+    t=None,
+    u=None,
+):
+    """
+    Fit a SINDy regresssion model.
+
+    Parameters
+    ----------
+    x: array-like or list of array-like, shape (n_samples, n_input_features)
+        Training data. If training data contains multiple trajectories,
+        x should be a list containing data for each trajectory. Individual
+        trajectories may contain different numbers of samples.
+
+    t: float, numpy array of shape (n_samples,), or list of numpy arrays, optional \
+            (default None)
+        If t is a float, it specifies the timestep between each sample.
+        If array-like, it specifies the time at which each sample was
+        collected.
+        In this case the values in t must be strictly increasing.
+        In the case of multi-trajectory training data, t may also be a list
+        of arrays containing the collection times for each individual
+        trajectory.
+        If None, the default time step ``t_default`` will be used.
+
+    y: array-like or list of array-like, shape (n_samples, n_targets), \
+            optional (default None)
+        Optional pre-computed derivatives of the training data. If not
+        provided, the time derivatives of the training data will be
+        computed using the specified differentiation method. If x_dot is
+        provided, it must match the shape of the training data and these
+        values will be used as the time derivatives.
+
+    Returns
+    -------
+    self: a fitted :class:`SINDy` instance
+    """
+
+    if t is None:
+        t = self.t_default
+
+    if not _check_multiple_trajectories(x, y, u):
+        x, t, y, u = _adapt_to_multiple_trajectories(x, t, y, u)
+    x, y, u = _comprehend_and_validate_inputs(
+        x, t, y, u, self.feature_library
+    )
+
+    if u is None:
+        self.n_control_features_ = 0
+    else:
+        u = validate_control_variables(
+            x,
+            u,
+            trim_last_point=(self.discrete_time and y is None),
+        )
+        self.n_control_features_ = u[0].shape[u[0].ax_coord]
+    x, y = self._process_trajectories(x, t, y)
+
+    # Append control variables
+    if u is not None:
+        x = [np.concatenate((xi, ui), axis=xi.ax_coord) for xi, ui in zip(x, u)]
+
+    steps = [
+        ("features", self.feature_library),
+        ("shaping", SampleConcatter()),
+        ("model", self.optimizer),
+    ]
+    y = concat_sample_axis(y)
+    self.model = Pipeline(steps)
+    self.model.fit(x, y)
+
+    self.n_features_in_ = self.feature_library.n_features_in_
+    self.n_output_features_ = self.feature_library.n_output_features_
+
+    if self.feature_names is None:
+        feature_names = []
+        for i in range(self.n_features_in_ - self.n_control_features_):
+            feature_names.append("x" + str(i))
+        for i in range(self.n_control_features_):
+            feature_names.append("u" + str(i))
+        self.feature_names = feature_names
+
+    return self
